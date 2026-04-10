@@ -44,7 +44,7 @@ from trading.polymarket_client import PolymarketClient, TemperatureMarket
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path(__file__).parent / "sim_data"
+DATA_DIR = Path(os.getenv("SIM_DATA_DIR", str(Path(__file__).parent / "sim_data")))
 
 
 # ─── Data Models ─────────────────────────────────────────

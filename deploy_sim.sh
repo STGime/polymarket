@@ -19,9 +19,24 @@ gcloud builds submit --tag "${IMAGE}"
 
 echo "Deploying simulation to Cloud Run..."
 
-ENV_VARS="DRY_RUN=true,SIM_INTERVAL=300"
+# Write env vars to a temp YAML file (handles long values with special chars)
+ENV_FILE=$(mktemp -t weather-sim-env-XXXXXX.yaml)
+trap "rm -f ${ENV_FILE}" EXIT
+
+cat > "${ENV_FILE}" <<EOF
+DRY_RUN: "true"
+SIM_INTERVAL: "300"
+SIM_DATA_DIR: "/tmp/sim_data"
+EOF
+
 if [ -n "${METOFFICE_API_KEY:-}" ]; then
-    ENV_VARS="${ENV_VARS},METOFFICE_API_KEY=${METOFFICE_API_KEY}"
+    # Use Python to safely YAML-escape the long key
+    python3 -c "
+import yaml, sys
+key = '''${METOFFICE_API_KEY}'''
+with open('${ENV_FILE}', 'a') as f:
+    yaml.safe_dump({'METOFFICE_API_KEY': key}, f, default_style='|')
+" 2>/dev/null || echo "METOFFICE_API_KEY: \"${METOFFICE_API_KEY}\"" >> "${ENV_FILE}"
 fi
 
 gcloud run deploy "${SERVICE_NAME}" \
@@ -36,7 +51,7 @@ gcloud run deploy "${SERVICE_NAME}" \
     --port 8080 \
     --timeout 3600 \
     --allow-unauthenticated \
-    --set-env-vars "${ENV_VARS}" \
+    --env-vars-file "${ENV_FILE}" \
     --execution-environment gen2 \
     --command python \
     --args sim_server.py
