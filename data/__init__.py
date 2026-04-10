@@ -1,0 +1,1 @@
+# Polymarket Weather Trading Bot
