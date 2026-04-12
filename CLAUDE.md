@@ -1,0 +1,96 @@
+# Polymarket Weather Trading Bot
+
+## Project Overview
+Automated trading bot for Polymarket temperature prediction markets.
+Predicts daily high temperatures using 5 weather data sources and compares
+against market-implied probabilities to find edges.
+
+## Architecture
+- `data/weather_sources.py` — fetches METAR, TAF, ensemble NWP, deterministic, national met APIs
+- `data/temperature_predictor.py` — combines sources into probability distribution over temperature bands
+- `trading/polymarket_client.py` — discovers markets via Gamma API events endpoint, reads CLOB order books
+- `trading/engine.py` — main loop: discover → predict → score → trade → manage positions
+- `trading/risk_manager.py` — Kelly criterion sizing, drawdown protection, daily limits
+- `simulation.py` — multi-strategy simulation with $10K fake bankroll, resolution tracking
+- `sim_server.py` — HTTP dashboard for Cloud Run deployment of simulation
+
+## Data Sources (5)
+1. **METAR** — airport weather observations (aviationweather.gov, free)
+2. **TAF** — terminal forecasts with TX/TN temp groups (aviationweather.gov, free)
+3. **Ensemble NWP** — 139 members across 4 models: ICON(39), GFS(30), ECMWF(50), GEM(20) (Open-Meteo, free)
+4. **Deterministic** — Open-Meteo best-estimate daily max/min (free)
+5. **National Met Services** — NWS (US), JMA (Japan), Met Office (UK), Bright Sky/DWD (Germany), NEA (Singapore), BOM (Australia)
+
+## Polymarket API Notes
+- Market discovery: use **events endpoint** (`/events?tag_slug=weather`), NOT the markets endpoint
+- Each temperature event has multiple binary markets (one per band), not one market with multiple outcomes
+- The `outcomePrices` field in Gamma API is **stale** — use `bestAsk` field for live prices
+- CLOB order books are often empty for individual bands (neg-risk system) — Gamma `bestAsk` is the derived price matching the Polymarket UI
+- Must paginate events (100 per page, up to 500) to get all temperature markets (~200 active)
+- US cities use Fahrenheit bands, most international cities use Celsius
+
+## Key Calibration Decisions & History
+
+### Model Calibration v1 (initial) — 100% LOSS RATE
+**What happened:** 43 trades resolved, all losses. Bot systematically bet on tail events.
+- Bet on bands priced at 1-7 cents (1-7% market probability)
+- Model claimed 15-35% edge on these tails
+- Every single one lost — the market was right every time
+
+**Root causes identified:**
+1. `best_edge_band` selected by raw edge (`predicted - market`), which always maximizes at tails
+2. Gaussian sigma values too wide (1.0-2.0°C), spreading probability across all bands
+3. METAR trend extrapolation from nighttime temps polluted next-day high predictions
+4. No minimum market probability threshold — happily bet on 1 cent tokens
+
+### Model Calibration v2 (current fix, 2026-04-12)
+**Changes made:**
+- **Band selection**: switched from max raw edge to max expected profit with penalty for <5% market bands
+- **Minimum bet threshold**: raised from 1% to 5% market price
+- **Gaussian sigmas tightened**: national 1.0→0.7, deterministic 1.5→0.8, TAF TX/TN 1.5→0.8
+- **METAR uncertainty growth**: 0.3→0.5 per hour from last observation
+- **Source weights for next-day**: METAR trend dropped from 5% to 2% weight (nighttime observations are useless for next-day highs)
+- **Weight schedule**: added 3-hour bracket (METAR only useful within ~3h)
+
+**Expected behavior:** now bets on consensus-adjacent bands (5-32% market price) with moderate edges (+7-21%), not tails
+
+### Things that are calibration-sensitive (tune with care)
+- `sigma` values in `_gaussian_to_bands()` calls — controls how spread out each source's distribution is
+- Source weight dicts in `_adjust_weights()` — controls how much each data source matters at different time horizons
+- The `0.05` penalty threshold in best-band selection (line in `predict()`) — below this the market is almost always right
+- `min_edge_to_enter` per strategy in config.py — currently 6-15%
+- Kelly fraction per strategy — currently 0.15-0.40 of full Kelly
+
+### Ensemble member key format
+The Open-Meteo API returns keys like `temperature_2m_member01` (no underscore before number).
+Original code had `temperature_2m_member_` (with trailing underscore) which matched 0 members.
+This single-character bug meant we had 1 member instead of 139 for the entire initial analysis.
+
+### TAF temperature parsing
+- AWC API returns `timeFrom`/`timeTo` as Unix timestamps (integers), not ISO strings
+- TX/TN temperature groups are in raw TAF text, not in the JSON `temp` field (always empty array)
+- Parse with regex: `TX(M?\d+)/(\d{2})(\d{2})Z` and `TN(M?\d+)/(\d{2})(\d{2})Z`
+- Only ~9 countries include TX/TN: France, Spain, South Korea, China, Hong Kong, Brazil, Mexico, Argentina
+- US, UK, Germany, Japan, Singapore, Australia, Turkey do NOT include TX/TN in TAFs
+
+## Running
+```bash
+# Analysis
+python main.py --analyze-only
+
+# Simulation (local)
+python simulation.py --interval 300
+
+# Simulation (Cloud Run dashboard)
+python sim_server.py
+# Deploy: ./deploy_sim.sh
+
+# View results
+# Dashboard: https://weather-bot-sim-551730559911.us-central1.run.app
+```
+
+## Environment Variables
+- `METOFFICE_API_KEY` — UK Met Office DataHub (free, 360 calls/day)
+- `POLYMARKET_PRIVATE_KEY` — only for live trading
+- `DRY_RUN` — default true
+- `SIM_DATA_DIR` — where simulation saves trade logs (default: ./sim_data, use /tmp/sim_data on Cloud Run)
