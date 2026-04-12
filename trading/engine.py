@@ -190,8 +190,9 @@ class TradingEngine:
                 if not best_band:
                     continue
 
-                # Skip near-zero bands (likely resolved, "In Review", or dead)
-                if best_band.market_prob < 0.01:
+                # Skip low-probability bands — the market is usually right about
+                # tail events. Only bet on bands the market gives real probability.
+                if best_band.market_prob < 0.05:
                     continue
 
                 # Expected profit per $1 risked, scaled by confidence

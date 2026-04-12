@@ -320,7 +320,7 @@ class StrategySimulator:
                         best_band = band
                         break
 
-                if not best_band or best_band.market_prob < 0.01:
+                if not best_band or best_band.market_prob < 0.05:
                     continue
 
                 # Skip if we already have a trade on this city/date
