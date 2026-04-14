@@ -186,60 +186,83 @@ class ResolutionChecker:
         except Exception:
             return False
 
+        # Build the exact expected event title for matching
+        # Format: "Highest temperature in {city} on {Month} {day}?"
+        import re
+        target_month_day = target_dt.strftime("%B %-d")  # e.g. "April 12"
+        expected_title_fragment = f"temperature in {trade.city} on {target_month_day}"
+
         for event in events:
             title = event.get("title", "")
-            if trade.city not in title:
+
+            # Exact match: city AND month AND day must all be in the title
+            if expected_title_fragment.lower() not in title.lower():
                 continue
 
-            # Check date match
-            target_str = target_dt.strftime("%B %-d").replace(" 0", " ")
-            if target_str not in title and target_dt.strftime("%-d") not in title:
-                continue
-
-            # Found matching event — check which band won
+            # Found the correct event — now find which band won
+            winning_band = None
             for mkt in event.get("markets", []):
-                group_title = mkt.get("groupItemTitle", "")
-                if group_title != trade.band_label:
-                    continue
-
-                # Check resolution status
-                resolved_by = mkt.get("resolvedBy", "")
-                if not resolved_by and not mkt.get("closed"):
-                    continue
-
-                # Get the outcome price — $1 if Yes won, $0 if No won
                 try:
                     prices = json.loads(mkt.get("outcomePrices", "[]")) if isinstance(mkt.get("outcomePrices"), str) else (mkt.get("outcomePrices") or [])
                     yes_price = float(prices[0]) if prices else 0.0
                 except (json.JSONDecodeError, ValueError, TypeError):
                     yes_price = 0.0
 
-                # If yes_price is very close to 1.0, this band won
-                won = yes_price > 0.95
-                trade.resolved = True
-                trade.won = won
-                trade.resolution_price = 1.0 if won else 0.0
-                trade.pnl_usd = (trade.resolution_price - trade.entry_price) * trade.shares
-                trade.resolved_at = now.isoformat()
+                if yes_price > 0.90:
+                    winning_band = mkt.get("groupItemTitle", "")
+                    break
 
-                logger.info(
-                    f"{'WIN' if won else 'LOSS'} [{trade.strategy}] {trade.city} {trade.band_label}: "
-                    f"{'$' if won else '-$'}{abs(trade.pnl_usd):.2f} "
-                    f"(bought at {trade.entry_price:.3f})"
-                )
-                return True
+            if winning_band is None:
+                # Event found but no clear winner yet — don't resolve
+                return False
 
-        # If market is past due but not found in closed events,
-        # check if the target date is far enough past to assume loss
-        if now > target_dt + timedelta(hours=12):
-            # Market resolved but our band wasn't the winner
+            # Check if OUR band won
+            won = (winning_band == trade.band_label)
+
+            # Also check temperature equivalence (°C vs °F matching)
+            if not won:
+                def extract_temp_c(band):
+                    """Extract temperature in Celsius from band label."""
+                    m_c = re.search(r"(-?\d+)°C", band)
+                    if m_c:
+                        return float(m_c.group(1))
+                    m_f = re.search(r"(-?\d+)(?:-(\d+))?°F", band)
+                    if m_f:
+                        f_val = float(m_f.group(1))
+                        return (f_val - 32) * 5 / 9
+                    return None
+
+                our_temp = extract_temp_c(trade.band_label)
+                win_temp = extract_temp_c(winning_band)
+                if our_temp is not None and win_temp is not None:
+                    if abs(our_temp - win_temp) < 1.0:
+                        won = True  # within 1°C, same band in different units
+
+            trade.resolved = True
+            trade.won = won
+            trade.resolution_price = 1.0 if won else 0.0
+            trade.pnl_usd = (trade.resolution_price - trade.entry_price) * trade.shares
+            trade.resolved_at = now.isoformat()
+
+            logger.info(
+                f"{'WIN' if won else 'LOSS'} [{trade.strategy}] {trade.city} {trade.band_label}"
+                f"{f' (winner: {winning_band})' if not won else ''}: "
+                f"{'$' if won else '-$'}{abs(trade.pnl_usd):.2f} "
+                f"(bought at {trade.entry_price:.3f})"
+            )
+            return True
+
+        # Event not found in closed events yet — DON'T assume loss,
+        # just wait for the next check cycle
+        if now > target_dt + timedelta(hours=48):
+            # Only timeout after 48 hours (give resolution time)
             trade.resolved = True
             trade.won = False
             trade.resolution_price = 0.0
             trade.pnl_usd = -trade.cost_usd
             trade.resolved_at = now.isoformat()
             logger.info(
-                f"LOSS (timeout) [{trade.strategy}] {trade.city} {trade.band_label}: "
+                f"LOSS (timeout 48h) [{trade.strategy}] {trade.city} {trade.band_label}: "
                 f"-${abs(trade.pnl_usd):.2f}"
             )
             return True
