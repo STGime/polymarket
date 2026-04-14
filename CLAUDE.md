@@ -54,6 +54,26 @@ against market-implied probabilities to find edges.
 
 **Expected behavior:** now bets on consensus-adjacent bands (5-32% market price) with moderate edges (+7-21%), not tails
 
+### Resolution Checker Bug (2026-04-14) — ALL RESULTS WERE INVALID
+**What happened:** After v2 model fix, simulation still showed 0% win rate (77 losses).
+Investigation revealed ALL losses were false — the resolution checker had a date-matching bug.
+
+**Root cause:** Line `if target_dt.strftime("%-d") not in title` matched just the day number
+(e.g., "12") against ALL months. A trade for "London April 12" was matched against
+"London February 12", "London March 12", "London July 12" etc. — all old closed events.
+Since the band labels didn't match (different units/bands in old events), the 12-hour
+timeout kicked in and marked everything as LOSS.
+
+**Fix:**
+- Match on exact `"temperature in {city} on {Month} {day}"` string (includes month)
+- Find the actual winning band in the event before resolving
+- Add °C/°F equivalence check (within 1°C) for cross-unit matching
+- Extended timeout from 12h to 48h (markets need time to officially resolve)
+- Don't assume loss when event simply isn't found yet — just wait
+
+**Lesson:** Never trust simulation results without verifying the resolution logic against
+known outcomes. A simple date format bug invalidated the entire 3-day simulation.
+
 ### Things that are calibration-sensitive (tune with care)
 - `sigma` values in `_gaussian_to_bands()` calls — controls how spread out each source's distribution is
 - Source weight dicts in `_adjust_weights()` — controls how much each data source matters at different time horizons
