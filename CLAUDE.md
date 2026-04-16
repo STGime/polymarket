@@ -54,6 +54,18 @@ against market-implied probabilities to find edges.
 
 **Expected behavior:** now bets on consensus-adjacent bands (5-32% market price) with moderate edges (+7-21%), not tails
 
+### Cloud Run Ephemeral Storage (2026-04-16)
+Cloud Run's filesystem (`/tmp/sim_data`) is ephemeral — container restarts wipe all
+simulation data. After ~2 days of running, the container was restarted by Cloud Run
+(possibly due to memory pressure or platform updates) and we lost all history.
+
+**Fix:** Added Google Cloud Storage persistence via `google-cloud-storage` SDK.
+- Bucket: `gs://weather-bot-sim-data`
+- `SimPortfolio.save()` uploads JSON after each local write
+- `SimPortfolio.load()` downloads from GCS before reading local file
+- Grant Cloud Run default SA `roles/storage.objectAdmin` on the bucket
+- Controlled by `SIM_GCS_BUCKET` env var — empty = local-only fallback
+
 ### Resolution Checker Bug (2026-04-14) — ALL RESULTS WERE INVALID
 **What happened:** After v2 model fix, simulation still showed 0% win rate (77 losses).
 Investigation revealed ALL losses were false — the resolution checker had a date-matching bug.
