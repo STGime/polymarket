@@ -27,6 +27,7 @@ cat > "${ENV_FILE}" <<EOF
 DRY_RUN: "true"
 SIM_INTERVAL: "300"
 SIM_DATA_DIR: "/tmp/sim_data"
+SIM_GCS_BUCKET: "weather-bot-sim-data"
 EOF
 
 if [ -n "${METOFFICE_API_KEY:-}" ]; then

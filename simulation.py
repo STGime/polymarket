@@ -45,6 +45,40 @@ from trading.polymarket_client import PolymarketClient, TemperatureMarket
 logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(os.getenv("SIM_DATA_DIR", str(Path(__file__).parent / "sim_data")))
+GCS_BUCKET = os.getenv("SIM_GCS_BUCKET", "")  # e.g. "weather-bot-sim-data"
+
+
+def _gcs_upload(filename: str, content: str) -> bool:
+    """Upload file content to GCS bucket. No-op if GCS_BUCKET not set."""
+    if not GCS_BUCKET:
+        return False
+    try:
+        from google.cloud import storage
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob(filename)
+        blob.upload_from_string(content, content_type="application/json")
+        return True
+    except Exception as e:
+        logging.getLogger(__name__).debug(f"GCS upload failed ({filename}): {e}")
+        return False
+
+
+def _gcs_download(filename: str) -> Optional[str]:
+    """Download file content from GCS bucket. Returns None if unavailable."""
+    if not GCS_BUCKET:
+        return None
+    try:
+        from google.cloud import storage
+        client = storage.Client()
+        bucket = client.bucket(GCS_BUCKET)
+        blob = bucket.blob(filename)
+        if not blob.exists():
+            return None
+        return blob.download_as_text()
+    except Exception as e:
+        logging.getLogger(__name__).debug(f"GCS download failed ({filename}): {e}")
+        return None
 
 
 # ─── Data Models ─────────────────────────────────────────
@@ -114,11 +148,19 @@ class SimPortfolio:
             "total_returned": self.total_returned,
             "trades": [asdict(t) for t in self.trades],
         }
-        path.write_text(json.dumps(data, indent=2))
+        content = json.dumps(data, indent=2)
+        path.write_text(content)
+        # Also upload to GCS if configured (for Cloud Run persistence)
+        _gcs_upload(f"portfolio_{self.strategy}.json", content)
 
     @classmethod
     def load(cls, strategy: str) -> "SimPortfolio":
         path = DATA_DIR / f"portfolio_{strategy}.json"
+        # Try GCS first (source of truth on Cloud Run)
+        gcs_content = _gcs_download(f"portfolio_{strategy}.json")
+        if gcs_content:
+            DATA_DIR.mkdir(exist_ok=True)
+            path.write_text(gcs_content)
         if not path.exists():
             return cls(strategy=strategy, initial_bankroll=100.0, cash=100.0)
         data = json.loads(path.read_text())

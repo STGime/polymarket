@@ -5,6 +5,9 @@ python-dateutil>=2.8.0
 # Polymarket SDK
 py-clob-client>=0.18.0
 
+# Cloud Storage (for simulation data persistence on Cloud Run)
+google-cloud-storage>=2.10.0
+
 # Optional: enhanced parsing
 # avwx-engine>=1.8.0  # for local METAR/TAF parsing
 
