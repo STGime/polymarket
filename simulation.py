@@ -212,21 +212,26 @@ class ResolutionChecker:
         # Look for markets with same city and date that are now closed
         session = await self.client._get_session()
 
-        # Search for resolved/closed events for this city/date
+        # Search ALL weather events (don't filter by closed — the Gamma API
+        # returns old 2024 events for closed=true, not recent resolved ones)
         url = f"{self.client.config.gamma_api_url}/events"
-        params = {
-            "tag_slug": "weather",
-            "closed": "true",
-            "limit": 100,
-        }
-
-        try:
-            async with session.get(url, params=params) as resp:
-                if resp.status != 200:
-                    return False
-                events = await resp.json()
-        except Exception:
-            return False
+        events = []
+        for offset in range(0, 500, 100):
+            params = {
+                "tag_slug": "weather",
+                "limit": 100,
+                "offset": offset,
+            }
+            try:
+                async with session.get(url, params=params) as resp:
+                    if resp.status != 200:
+                        break
+                    page = await resp.json()
+                    if not page:
+                        break
+                    events.extend(page)
+            except Exception:
+                break
 
         # Build the exact expected event title for matching
         # Format: "Highest temperature in {city} on {Month} {day}?"
