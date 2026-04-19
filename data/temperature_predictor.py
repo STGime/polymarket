@@ -63,11 +63,11 @@ class TemperaturePredictor:
 
         # Weighting for each data source (dynamic based on hours until resolution)
         self.source_weights = {
-            "metar_trend": 0.25,      # recent observation trend
+            "metar_trend": 0.08,      # only useful within 3-6 hours
             "taf_forecast": 0.15,     # professional meteorologist forecast (TX/TN)
-            "ensemble": 0.30,         # multi-model ensemble distribution
-            "deterministic": 0.10,    # Open-Meteo best-estimate forecast
-            "national_forecast": 0.20, # national met service (NWS, JMA, etc.)
+            "ensemble": 0.27,         # multi-model ensemble distribution
+            "deterministic": 0.17,    # Open-Meteo best-estimate forecast
+            "national_forecast": 0.33, # national met service (NWS, JMA, etc.)
         }
 
     async def predict(
@@ -154,7 +154,7 @@ class TemperaturePredictor:
         if national:
             nat_max = national.get("max_temp_c")
             if nat_max is not None:
-                sigma = 0.7  # national services are very accurate (±1°C typical)
+                sigma = 0.4  # national services accurate to ±0.5-1°C → 68% in peak band
                 nat_dist = self._gaussian_to_bands(nat_max, sigma, bands)
                 distributions.append(("national_forecast", nat_dist, weights["national_forecast"]))
                 data_sources_used += 1
@@ -171,34 +171,49 @@ class TemperaturePredictor:
                 distributions, ensemble_spread, data_sources_used, hours_until
             )
 
+        # ── Bayesian blend with market prior ──
+        # The market is a strong predictor (~90%+ accuracy on consensus bands).
+        # Blend our weather-model distribution with the market distribution.
+        market_probs = {b.label: max(b.market_prob, 0.001) for b in bands}
+        market_total = sum(market_probs.values())
+        market_dist = {k: v / market_total for k, v in market_probs.items()}
+
+        # More sources = more confidence in our model vs market
+        market_weight = 0.35 if data_sources_used >= 3 else 0.50
+        model_weight = 1.0 - market_weight
+
+        for label in predicted:
+            predicted[label] = (
+                model_weight * predicted[label] +
+                market_weight * market_dist.get(label, 0.0)
+            )
+
+        # Re-normalize
+        total = sum(predicted.values())
+        if total > 0:
+            predicted = {k: v / total for k, v in predicted.items()}
+
         # ── Calculate edges ──
-        market_probs = {b.label: b.market_prob for b in bands}
+        raw_market_probs = {b.label: b.market_prob for b in bands}
         edges = {}
         for label in predicted:
-            edges[label] = predicted[label] - market_probs.get(label, 0.0)
+            edges[label] = predicted[label] - raw_market_probs.get(label, 0.0)
 
-        # Find best band by expected profit (not raw edge)
-        # Raw edge favors tail bands (2% market, 20% ours = +18% edge but almost never wins)
-        # Expected profit = predicted_prob * (1/price - 1) - (1 - predicted_prob)
-        # This properly accounts for the payout odds
+        # Find best band: only consider bands with ≥15% market probability
+        # (consensus or consensus-adjacent). The market is right on tails.
+        MIN_MARKET_PROB = 0.15
         best_band = max(predicted, key=predicted.get)
         best_edge_band = best_band
         best_edge = edges.get(best_band, 0.0)
         best_ev = 0.0
 
         for label in predicted:
-            mp = market_probs.get(label, 0.0)
+            mp = raw_market_probs.get(label, 0.0)
             pp = predicted[label]
             edge = edges[label]
-            if edge <= 0 or mp < 0.01:
+            if edge <= 0 or mp < MIN_MARKET_PROB:
                 continue
-            # Expected profit per dollar: only bet where we have meaningful
-            # probability AND meaningful edge
             ev = pp * (1.0 / mp - 1.0) - (1.0 - pp)
-            # Penalize very low market-probability bands — if market says <5%
-            # and we disagree, the market is usually right
-            if mp < 0.05:
-                ev *= mp / 0.05  # linear penalty below 5%
             if ev > best_ev:
                 best_ev = ev
                 best_edge_band = label
@@ -229,29 +244,29 @@ class TemperaturePredictor:
         """
         if hours_until < 3:
             return {
-                "metar_trend": 0.40,
+                "metar_trend": 0.35,
                 "taf_forecast": 0.10,
                 "ensemble": 0.15,
                 "deterministic": 0.10,
-                "national_forecast": 0.25,
+                "national_forecast": 0.30,
             }
         elif hours_until < 12:
             return {
-                "metar_trend": 0.10,
-                "taf_forecast": 0.20,
+                "metar_trend": 0.08,
+                "taf_forecast": 0.17,
                 "ensemble": 0.25,
                 "deterministic": 0.15,
-                "national_forecast": 0.30,
+                "national_forecast": 0.35,
             }
         else:
-            # Next-day: METAR trend is nearly useless (current nighttime temps
-            # tell us nothing about tomorrow's high). Lean on forecast models.
+            # Next-day: METAR excluded entirely (returns None from Change 1).
+            # Lean on forecast models that actually predict daily max.
             return {
-                "metar_trend": 0.02,
-                "taf_forecast": 0.18,
+                "metar_trend": 0.00,
+                "taf_forecast": 0.15,
                 "ensemble": 0.30,
                 "deterministic": 0.20,
-                "national_forecast": 0.30,
+                "national_forecast": 0.35,
             }
 
     def _metar_trend_distribution(
@@ -309,10 +324,14 @@ class TemperaturePredictor:
             projected_temp, target_date, temp_vals[-1], city=city
         )
 
-        # Uncertainty increases significantly with time — METAR trends
-        # are only reliable for ~2-3 hours, not next-day predictions
+        # METAR trends are useless beyond 6 hours — nighttime observations
+        # tell nothing about tomorrow's daytime high
         hours_from_last_obs = (target_date - temps[-1][0]).total_seconds() / 3600
-        sigma = max(0.8, 0.5 + 0.5 * hours_from_last_obs)
+        if hours_from_last_obs > 6:
+            return None, slope
+
+        # Within 6 hours: moderate uncertainty growth, capped at ~1.2°C
+        sigma = max(0.3, 0.3 + 0.15 * hours_from_last_obs)
 
         # Build distribution over bands
         dist = self._gaussian_to_bands(projected_temp, sigma, bands)
@@ -353,10 +372,10 @@ class TemperaturePredictor:
 
         if max_temp is not None:
             projected = max_temp
-            sigma = 0.8  # TX from TAF is a professional meteorologist's forecast
+            sigma = 0.5  # TX from TAF is a professional meteorologist's forecast
         elif temp is not None:
             projected = temp
-            sigma = 1.2
+            sigma = 0.7
         else:
             return None
 
@@ -410,17 +429,23 @@ class TemperaturePredictor:
         temp_max = max(all_member_temps)
         spread = temp_max - temp_min
 
-        # Build empirical distribution with Laplace smoothing on counts
-        n_members = len(all_member_temps)
-        n_bands = len(bands)
-        alpha = 1  # standard Laplace smoothing parameter
+        # Kernel density estimation: each member contributes a narrow Gaussian
+        # kernel centered on its temperature. This produces concentrated
+        # distributions that reflect actual ensemble clustering.
+        kernel_sigma = 0.3
         dist = {}
         for band in bands:
-            count = sum(
-                1 for t in all_member_temps
-                if band.low_c <= t < band.high_c
-            )
-            dist[band.label] = (count + alpha) / (n_members + alpha * n_bands)
+            prob = 0.0
+            for t in all_member_temps:
+                p_high = _normal_cdf(band.high_c, t, kernel_sigma)
+                p_low = _normal_cdf(band.low_c, t, kernel_sigma)
+                prob += max(0.0, p_high - p_low)
+            dist[band.label] = prob
+
+        # Normalize (no Laplace smoothing — zero-member bands get ~0%)
+        total = sum(dist.values())
+        if total > 0:
+            dist = {k: v / total for k, v in dist.items()}
 
         return dist, spread
 
@@ -466,8 +491,8 @@ class TemperaturePredictor:
         if projected is None:
             return None
 
-        # Deterministic forecast has ~1°C typical error for daily max
-        sigma = 0.8
+        # Deterministic forecast accurate to ~1°C for daily max
+        sigma = 0.45
         return self._gaussian_to_bands(projected, sigma, bands)
 
     def _gaussian_to_bands(

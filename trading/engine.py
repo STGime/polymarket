@@ -190,9 +190,9 @@ class TradingEngine:
                 if not best_band:
                     continue
 
-                # Skip low-probability bands — the market is usually right about
-                # tail events. Only bet on bands the market gives real probability.
-                if best_band.market_prob < 0.05:
+                # Only bet on consensus/consensus-adjacent bands (≥15% market probability).
+                # The market is right ~99% of the time on tail bands.
+                if best_band.market_prob < 0.15:
                     continue
 
                 # Expected profit per $1 risked, scaled by confidence

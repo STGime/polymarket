@@ -166,8 +166,8 @@ async def run_analysis(config: BotConfig):
                         best_band_obj = b
                         break
                 price = best_band_obj.market_prob if best_band_obj else 0
-                # Skip low-probability bands — market is usually right about tails
-                if price < 0.05:
+                # Only bet on consensus/consensus-adjacent bands (≥15%)
+                if price < 0.15:
                     continue
                 pred_prob = prediction.predicted_probs.get(prediction.best_edge_band, 0)
                 if price > 0 and price < 1:
