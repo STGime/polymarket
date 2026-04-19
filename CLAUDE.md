@@ -52,7 +52,25 @@ against market-implied probabilities to find edges.
 - **Source weights for next-day**: METAR trend dropped from 5% to 2% weight (nighttime observations are useless for next-day highs)
 - **Weight schedule**: added 3-hour bracket (METAR only useful within ~3h)
 
-**Expected behavior:** now bets on consensus-adjacent bands (5-32% market price) with moderate edges (+7-21%), not tails
+**v2 result:** Still 1.2% win rate (1/85). Model distributions still too flat — all bands got ~10-12%.
+Average entry price improved to 9.7% (from 7.7%) but still betting on non-consensus bands.
+
+### Model Calibration v3 (2026-04-19) — CONCENTRATED DISTRIBUTIONS
+**What happened:** 85 trades, 1 win (1.2%). Mean entry price 9.7%, 64% of losses on <10% bands.
+Root cause: even with v2 sigma tightening, all 5 sources produced broad distributions.
+Combined average was ~10-12% per band → model couldn't distinguish consensus from tails.
+
+**Changes:**
+1. **METAR hard cutoff at 6h** — returns None beyond 6 hours (was unbounded σ=12.5°C at 24h)
+2. **Sigmas drastically tightened**: national 0.7→0.4, TAF 0.8→0.5, deterministic 0.8→0.45
+3. **Ensemble: kernel density (σ=0.3 per member)** replaces Laplace smoothing (α=1 guaranteed 7% floor)
+4. **Bayesian market-prior**: blend 65% model + 35% market distribution. Market is right ~90%+, don't ignore it.
+5. **Hard 15% minimum market probability** — never bet on bands below 15% (was 5%). Kills all tail bets.
+6. **Source weights rebalanced**: METAR 0% for next-day, national 35%
+7. **EV penalty removed** — replaced by hard floor, no more linear scaling that amplified tails
+
+**Expected behavior:** "market says 59%, we say 79%" (consensus-confirming, edge +20%)
+instead of "market says 5%, we say 12%" (tail bet, always loses)
 
 ### Cloud Run Ephemeral Storage (2026-04-16)
 Cloud Run's filesystem (`/tmp/sim_data`) is ephemeral — container restarts wipe all
