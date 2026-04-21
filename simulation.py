@@ -208,30 +208,33 @@ class ResolutionChecker:
         if now < target_dt + timedelta(hours=2):
             return False  # too early, market hasn't resolved yet
 
-        # Find the market and check resolution
-        # Look for markets with same city and date that are now closed
+        # Find the matching event by constructing its slug
+        # Polymarket slugs follow the pattern: "highest-temperature-in-{city}-on-{month}-{day}"
         session = await self.client._get_session()
+        import re as _re
 
-        # Search ALL weather events (don't filter by closed — the Gamma API
-        # returns old 2024 events for closed=true, not recent resolved ones)
+        target_month_day = target_dt.strftime("%B %-d")  # e.g. "April 19"
+        slug_city = trade.city.lower().replace(" ", "-").replace("ã", "a").replace("é", "e")
+        slug_date = target_month_day.lower().replace(" ", "-")
+        expected_slug = f"highest-temperature-in-{slug_city}-on-{slug_date}"
+
         url = f"{self.client.config.gamma_api_url}/events"
         events = []
-        for offset in range(0, 500, 100):
-            params = {
-                "tag_slug": "weather",
-                "limit": 100,
-                "offset": offset,
-            }
+
+        # Try slug search (fast, exact match) — try with and without year suffix
+        year = target_dt.strftime("%Y")
+        slug_variants = [expected_slug, f"{expected_slug}-{year}"]
+
+        for slug in slug_variants:
             try:
-                async with session.get(url, params=params) as resp:
-                    if resp.status != 200:
-                        break
-                    page = await resp.json()
-                    if not page:
-                        break
-                    events.extend(page)
+                async with session.get(url, params={"slug": slug, "limit": 5}) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if isinstance(data, list) and data:
+                            events.extend(data)
+                            break
             except Exception:
-                break
+                pass
 
         # Build the exact expected event title for matching
         # Format: "Highest temperature in {city} on {Month} {day}?"
