@@ -71,15 +71,17 @@ class LastHourStrategy:
         tz_name = city_info.get("tz", "UTC")
         local_tz = ZoneInfo(tz_name)
 
-        # ── Check timing: only trade 1-4 hours before resolution ──
+        # ── Check timing: only trade 0.5-5 hours before resolution ──
         now = datetime.now(timezone.utc)
         hours_until = (target_date - now).total_seconds() / 3600
-        if hours_until < 0.5 or hours_until > 4:
+        if hours_until < 0.5 or hours_until > 5:
             return None
 
-        # Check local time: should be afternoon (after 12:00 local)
+        # Check local time: should be late morning or afternoon (after 11:00 local)
+        # Daily highs typically occur between 1-4pm local, but we want to catch
+        # the window before that too for markets resolving in the afternoon
         local_now = now.astimezone(local_tz)
-        if local_now.hour < 12:
+        if local_now.hour < 11:
             return None  # too early, high hasn't happened yet
 
         # ── Fetch METAR history (last 6 hours) ──
@@ -116,14 +118,15 @@ class LastHourStrategy:
         peak_idx = recent_temps.index(max(recent_temps))
         readings_since_peak = len(recent_temps) - 1 - peak_idx
 
-        # Temperature has peaked if:
-        # - We're past 2pm local AND temp has been flat or declining for 2+ readings
-        # - OR we're past 4pm local (peak almost certainly passed)
+        # Assess if temperature has peaked:
+        # - Past 1pm local AND temp flat/declining for 1+ reading
+        # - Past 3pm local (almost certainly peaked)
+        # - 2+ declining readings regardless of time
         hours_past_noon = (local_now.hour - 12) + local_now.minute / 60
         peak_reached = (
-            (hours_past_noon >= 2 and readings_since_peak >= 2) or
-            (hours_past_noon >= 4) or
-            (readings_since_peak >= 3)  # 3+ declining readings regardless of time
+            (hours_past_noon >= 1 and readings_since_peak >= 1) or
+            (hours_past_noon >= 3) or
+            (readings_since_peak >= 2)
         )
 
         if not peak_reached:
@@ -174,10 +177,15 @@ class LastHourStrategy:
         # ── Check if there's actually an edge ──
         market_price = best_band.market_prob
         if market_price >= confidence:
+            logger.debug(
+                f"[{city}] No edge: market={market_price:.0%} >= confidence={confidence:.0%} "
+                f"for {best_band.label} (METAR={current_temp}°C max={observed_max}°C)"
+            )
             return None  # market already prices this correctly, no edge
 
         edge = confidence - market_price
         if edge < 0.05:
+            logger.debug(f"[{city}] Edge too small: {edge:.1%} for {best_band.label}")
             return None  # edge too small
 
         # ── Also check the adjacent band (might be better value) ──
