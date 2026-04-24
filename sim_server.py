@@ -95,7 +95,7 @@ async def handle_report(request):
         lines.append(f"Last error: {runner.last_error}")
     lines.append("=" * 80)
 
-    strategies = ["conservative", "balanced", "aggressive"]
+    strategies = ["conservative", "balanced", "aggressive", "lasthour"]
     portfolios = {s: SimPortfolio.load(s) for s in strategies}
 
     lines.append("")
@@ -147,7 +147,7 @@ async def handle_report(request):
 async def handle_trades(request):
     """Return all trades as JSON."""
     all_trades = []
-    for s in ["conservative", "balanced", "aggressive"]:
+    for s in ["conservative", "balanced", "aggressive", "lasthour"]:
         p = SimPortfolio.load(s)
         for t in p.trades:
             all_trades.append({
@@ -169,7 +169,7 @@ async def handle_trades(request):
 async def handle_portfolio(request):
     """Return one strategy's portfolio JSON."""
     strategy = request.match_info["strategy"]
-    if strategy not in ["conservative", "balanced", "aggressive"]:
+    if strategy not in ["conservative", "balanced", "aggressive", "lasthour"]:
         return web.json_response({"error": "invalid strategy"}, status=400)
     p = SimPortfolio.load(strategy)
     return web.json_response({
@@ -189,7 +189,7 @@ async def handle_portfolio(request):
 async def handle_dashboard(request):
     """HTML dashboard."""
     runner: SimulationRunner = request.app["runner"]
-    strategies = ["conservative", "balanced", "aggressive"]
+    strategies = ["conservative", "balanced", "aggressive", "lasthour"]
     portfolios = {s: SimPortfolio.load(s) for s in strategies}
 
     rows = []

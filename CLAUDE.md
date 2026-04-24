@@ -69,8 +69,42 @@ Combined average was ~10-12% per band → model couldn't distinguish consensus f
 6. **Source weights rebalanced**: METAR 0% for next-day, national 35%
 7. **EV penalty removed** — replaced by hard floor, no more linear scaling that amplified tails
 
-**Expected behavior:** "market says 59%, we say 79%" (consensus-confirming, edge +20%)
-instead of "market says 5%, we say 12%" (tail bet, always loses)
+**v3 result (2026-04-23):** 7-9% win rate (2W/20-33L per strategy). Entry prices improved
+to 20-33% (consensus-adjacent) but still far from the ~25-30% win rate needed to break even.
+All three strategies went bankrupt. Cash tracking was also broken — double-counting
+win returns every cycle inflated cash to $13K on a $10K bankroll with negative P&L.
+
+**Conclusion:** The prediction-based approach (v1/v2/v3) fundamentally doesn't work.
+The Polymarket temperature market is too efficient — the crowd already incorporates
+the same public weather data. Our 5 data sources don't provide enough alpha over
+what the market already knows.
+
+### Cash Double-Counting Bug (2026-04-23)
+`_update_cash_from_resolutions()` iterated ALL resolved trades every cycle, adding
+win returns repeatedly. Over 849 cycles, wins were credited hundreds of times.
+Fix: recalculate cash from scratch each cycle:
+`cash = initial_bankroll - total_cost_all_trades + win_returns`
+
+### Strategy Pivot: Last-Hour Speed Trading (2026-04-23)
+**Why prediction failed:** We tried to beat the market at temperature prediction using
+the same publicly available data (METAR, ensembles, NWS, etc.). The market already
+prices this in. Over 85+ trades across v1-v3, we could not sustain >10% win rate.
+
+**New approach — "Last-Hour Speed":** Instead of predicting temperature, OBSERVE it.
+By 2-3pm local time, the daily high is often already reached or nearly reached.
+Fresh METAR data (updated every 30 min) tells us the current temperature. If the
+thermometer reads 24.8°C at 3pm and conditions are cooling (wind shifting, clouds),
+then "25°C" is nearly certain and "27°C or higher" is nearly impossible.
+
+**Edge source:** Not better models — faster reaction to real-time observations.
+The market may take 10-60 minutes to fully price in a new METAR observation.
+
+**Other strategies considered but not implemented:**
+- Arbitrage (band prices not summing to 100%) — requires live trading
+- Sell obvious losers (sell "Yes" on impossible bands) — requires live trading
+- Cross-city correlation (London warm → Paris follows) — hard to quantify edge
+- Extreme weather only (trade during anomalies) — too few opportunities
+- Market behavior patterns (front-run convergence) — needs historical price data
 
 ### Cloud Run Ephemeral Storage (2026-04-16)
 Cloud Run's filesystem (`/tmp/sim_data`) is ephemeral — container restarts wipe all

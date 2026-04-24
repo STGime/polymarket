@@ -508,11 +508,147 @@ class StrategySimulator:
         await self.client.close()
 
 
+class LastHourSimulator:
+    """
+    Last-hour speed strategy simulator.
+    Only trades markets 1-4 hours before resolution, using METAR
+    observations to determine if the daily high has already been reached.
+    """
+
+    def __init__(self, bankroll: float = 10_000.0):
+        self.strategy_name = "lasthour"
+        self.config = BotConfig()
+        self.config.dry_run = True
+
+        self.weather = WeatherDataService(self.config.weather)
+        self.client = PolymarketClient(self.config.polymarket, dry_run=True)
+        self.resolver = ResolutionChecker(self.client)
+        self.portfolio = SimPortfolio.load("lasthour")
+
+        if not self.portfolio.trades:
+            self.portfolio.cash = bankroll
+            self.portfolio.initial_bankroll = bankroll
+
+        from strategy_lasthour import LastHourStrategy
+        self.strategy = LastHourStrategy(self.weather)
+
+    async def run_cycle(self):
+        """Run one last-hour cycle: resolve pending, scan afternoon markets, trade."""
+        # 1. Resolve pending
+        resolved = await self.resolver.check_resolutions(self.portfolio)
+        if resolved:
+            self._update_cash_from_resolutions()
+
+        if self.portfolio.cash < 10:
+            return  # bankrupt
+
+        # 2. Discover ALL markets (no time filter — the strategy handles that)
+        markets = await self.client.discover_temperature_markets()
+
+        logger.info(
+            f"[lasthour] {len(markets)} markets, "
+            f"cash=${self.portfolio.cash:.2f}, pending={len(self.portfolio.pending_trades)}"
+        )
+
+        # 3. Analyze each market with last-hour strategy
+        opportunities = []
+        for market in markets:
+            if not market.bands:
+                continue
+
+            # Skip if we already have a trade on this city/date
+            already_trading = any(
+                t.city == market.city and t.target_date == market.target_date.isoformat()
+                for t in self.portfolio.pending_trades
+            )
+            if already_trading:
+                continue
+
+            try:
+                result = await self.strategy.analyze(
+                    city=market.city,
+                    target_date=market.target_date,
+                    bands=market.bands,
+                )
+                if result:
+                    result["market"] = market
+                    opportunities.append(result)
+            except Exception as e:
+                logger.debug(f"Last-hour analysis error {market.city}: {e}")
+
+        # Sort by confidence * edge (highest conviction first)
+        opportunities.sort(key=lambda o: o["confidence"] * o["edge"], reverse=True)
+
+        # 4. Execute trades (up to 5 per cycle)
+        for opp in opportunities[:5]:
+            band = opp["band"]
+            confidence = opp["confidence"]
+            edge = opp["edge"]
+            market = opp["market"]
+
+            # Size: proportional to confidence, max 10% of cash
+            size_fraction = min(0.10, edge * confidence)
+            size_usd = self.portfolio.cash * size_fraction
+            if size_usd < 10:
+                continue
+
+            price = band.market_prob
+            if price <= 0 or price >= 1:
+                continue
+
+            shares = size_usd / price
+
+            trade = SimTrade(
+                id=f"lasthour_{datetime.now().timestamp():.0f}",
+                strategy="lasthour",
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                city=market.city,
+                band_label=band.label,
+                market_question=market.question,
+                target_date=market.target_date.isoformat(),
+                side="BUY",
+                entry_price=price,
+                shares=round(shares, 2),
+                cost_usd=round(size_usd, 2),
+                predicted_prob=round(confidence, 4),
+                edge=round(edge, 4),
+                confidence=round(confidence, 4),
+                ev_per_dollar=round(confidence * (1.0 / price - 1.0) - (1.0 - confidence), 4),
+                data_sources=1,
+            )
+
+            self.portfolio.cash -= trade.cost_usd
+            self.portfolio.total_invested += trade.cost_usd
+            self.portfolio.trades.append(trade)
+
+            logger.info(
+                f"TRADE [lasthour] {trade.city} → {trade.band_label}: "
+                f"${trade.cost_usd:.2f} @ {price:.0%} "
+                f"(METAR={opp['current_temp']:.1f}°C max={opp['observed_max']:.1f}°C "
+                f"conf={confidence:.0%} edge={edge:+.0%})"
+            )
+
+        self.portfolio.save()
+
+    def _update_cash_from_resolutions(self):
+        total_cost = sum(t.cost_usd for t in self.portfolio.trades)
+        win_returns = sum(
+            t.shares * 1.0 for t in self.portfolio.resolved_trades if t.won
+        )
+        self.portfolio.cash = self.portfolio.initial_bankroll - total_cost + win_returns
+        self.portfolio.total_invested = total_cost
+        self.portfolio.total_returned = win_returns
+
+    async def close(self):
+        await self.weather.close()
+        await self.client.close()
+
+
 # ─── Evaluation Report ───────────────────────────────────
 
 def generate_report():
     """Generate performance comparison report across all strategies."""
-    strategies = ["conservative", "balanced", "aggressive"]
+    strategies = ["conservative", "balanced", "aggressive", "lasthour"]
     portfolios = {}
 
     for s in strategies:
@@ -596,9 +732,14 @@ def generate_report():
 # ─── Main Runner ─────────────────────────────────────────
 
 async def run_simulation_cycle():
-    """Run one cycle for all 3 strategies."""
-    strategies = ["conservative", "balanced", "aggressive"]
+    """Run one cycle for all strategies including last-hour."""
+    # Prediction-based strategies
+    strategies = ["conservative", "balanced", "aggressive", "lasthour"]
     simulators = [StrategySimulator(s, bankroll=10_000.0) for s in strategies]
+
+    # Last-hour observation-based strategy
+    lasthour_sim = LastHourSimulator(bankroll=10_000.0)
+    simulators.append(lasthour_sim)
 
     for sim in simulators:
         try:
@@ -612,9 +753,9 @@ async def run_simulation_cycle():
 async def run_continuous(interval_seconds: int = 120):
     """Run simulation continuously."""
     logger.info("=" * 60)
-    logger.info("POLYMARKET WEATHER BOT — 3-STRATEGY SIMULATION")
+    logger.info("POLYMARKET WEATHER BOT — 4-STRATEGY SIMULATION")
     logger.info(f"  Bankroll: $10,000 per strategy")
-    logger.info(f"  Strategies: conservative, balanced, aggressive")
+    logger.info(f"  Strategies: conservative, balanced, aggressive, lasthour")
     logger.info(f"  Interval: {interval_seconds}s")
     logger.info("=" * 60)
 
@@ -628,7 +769,7 @@ async def run_continuous(interval_seconds: int = 120):
         await run_simulation_cycle()
 
         # Print quick summary
-        for s in ["conservative", "balanced", "aggressive"]:
+        for s in ["conservative", "balanced", "aggressive", "lasthour"]:
             p = SimPortfolio.load(s)
             resolved = len(p.resolved_trades)
             pending = len(p.pending_trades)
@@ -648,7 +789,7 @@ async def resolve_pending():
     client = PolymarketClient(config.polymarket, dry_run=True)
     resolver = ResolutionChecker(client)
 
-    for s in ["conservative", "balanced", "aggressive"]:
+    for s in ["conservative", "balanced", "aggressive", "lasthour"]:
         portfolio = SimPortfolio.load(s)
         if portfolio.pending_trades:
             resolved = await resolver.check_resolutions(portfolio)
