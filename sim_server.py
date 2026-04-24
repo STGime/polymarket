@@ -100,20 +100,21 @@ async def handle_report(request):
 
     lines.append("")
     lines.append(f"{'Strategy':<15} {'Trades':>7} {'Resolved':>9} {'Won':>5} {'Lost':>6} "
-                 f"{'Win%':>6} {'P&L':>10} {'ROI':>8} {'Cash':>10}")
-    lines.append("─" * 95)
+                 f"{'Win%':>6} {'P&L(res)':>10} {'ROI':>8} {'Cash':>10} {'Status':>10}")
+    lines.append("─" * 105)
 
     for name, p in portfolios.items():
         resolved = p.resolved_trades
         wins = sum(1 for t in resolved if t.won)
         losses = sum(1 for t in resolved if not t.won)
         win_rate = wins / len(resolved) * 100 if resolved else 0
-        pnl = p.total_pnl
-        roi = pnl / p.initial_bankroll * 100 if p.initial_bankroll else 0
+        resolved_pnl = sum(t.pnl_usd for t in resolved)
+        roi = resolved_pnl / p.initial_bankroll * 100 if p.initial_bankroll else 0
+        status = "BANKRUPT" if p.cash < 0 else "active"
 
         lines.append(
             f"{name:<15} {len(p.trades):>7} {len(resolved):>9} {wins:>5} {losses:>6} "
-            f"{win_rate:>5.1f}% ${pnl:>+9.2f} {roi:>+7.1f}% ${p.cash:>9.2f}"
+            f"{win_rate:>5.1f}% ${resolved_pnl:>+9.2f} {roi:>+7.1f}% ${p.cash:>9.2f} {status:>10}"
         )
 
     # Trade details per strategy
@@ -198,21 +199,29 @@ async def handle_dashboard(request):
         wins = sum(1 for t in resolved if t.won)
         losses = sum(1 for t in resolved if not t.won)
         win_rate = wins / len(resolved) * 100 if resolved else 0
-        pnl = p.total_pnl
-        roi = pnl / p.initial_bankroll * 100 if p.initial_bankroll else 0
-        pnl_color = "#0a7" if pnl >= 0 else "#d33"
+        # P&L from resolved trades only (not pending)
+        resolved_pnl = sum(t.pnl_usd for t in resolved)
+        roi = resolved_pnl / p.initial_bankroll * 100 if p.initial_bankroll else 0
+        pnl_color = "#0a7" if resolved_pnl >= 0 else "#d33"
+        bankrupt = p.cash < 0
+        status_badge = ' <span style="color:#d33;font-weight:bold">BANKRUPT</span>' if bankrupt else ''
+        cash_color = "#d33" if bankrupt else "#333"
+        pending_count = len(p.pending_trades)
+        pending_cost = sum(t.cost_usd for t in p.pending_trades)
+        tr_style = ' style="opacity:0.5"' if bankrupt else ''
 
         rows.append(f"""
-        <tr>
-            <td><strong>{name}</strong></td>
+        <tr{tr_style}>
+            <td><strong>{name}</strong>{status_badge}</td>
             <td>{len(p.trades)}</td>
             <td>{len(resolved)}</td>
             <td>{wins}</td>
             <td>{losses}</td>
             <td>{win_rate:.1f}%</td>
-            <td style="color:{pnl_color}"><strong>${pnl:+.2f}</strong></td>
+            <td style="color:{pnl_color}"><strong>${resolved_pnl:+.2f}</strong></td>
             <td style="color:{pnl_color}">{roi:+.1f}%</td>
-            <td>${p.cash:.2f}</td>
+            <td style="color:{cash_color}">${p.cash:.2f}</td>
+            <td>{pending_count} (${pending_cost:.0f})</td>
         </tr>
         """)
 
@@ -250,9 +259,10 @@ async def handle_dashboard(request):
                 <th>Won</th>
                 <th>Lost</th>
                 <th>Win Rate</th>
-                <th>P&L</th>
+                <th>P&L (resolved)</th>
                 <th>ROI</th>
                 <th>Cash</th>
+                <th>Pending</th>
             </tr>
         </thead>
         <tbody>
