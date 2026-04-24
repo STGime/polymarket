@@ -446,6 +446,9 @@ class StrategySimulator:
         }[self.strategy_name]
 
         for opp in opportunities[:max_trades]:
+            if self.portfolio.cash < 10:
+                break  # out of money
+
             # Kelly-inspired sizing
             kelly_f = opp["pred_prob"] * (1.0 / opp["price"] - 1.0) - (1.0 - opp["pred_prob"])
             if kelly_f <= 0:
@@ -494,14 +497,17 @@ class StrategySimulator:
         self.portfolio.save()
 
     def _update_cash_from_resolutions(self):
-        """Recalculate cash from scratch to avoid double-counting."""
-        total_cost = sum(t.cost_usd for t in self.portfolio.trades)
-        win_returns = sum(
+        """Credit cash for newly resolved wins. Walk trades sequentially."""
+        cash = self.portfolio.initial_bankroll
+        for t in self.portfolio.trades:
+            cash -= t.cost_usd
+            if t.resolved and t.won:
+                cash += t.shares * 1.0  # $1 per share on wins
+        self.portfolio.cash = cash
+        self.portfolio.total_invested = sum(t.cost_usd for t in self.portfolio.trades)
+        self.portfolio.total_returned = sum(
             t.shares * 1.0 for t in self.portfolio.resolved_trades if t.won
         )
-        self.portfolio.cash = self.portfolio.initial_bankroll - total_cost + win_returns
-        self.portfolio.total_invested = total_cost
-        self.portfolio.total_returned = win_returns
 
     async def close(self):
         await self.weather.close()
@@ -631,12 +637,13 @@ class LastHourSimulator:
         self.portfolio.save()
 
     def _update_cash_from_resolutions(self):
-        total_cost = sum(t.cost_usd for t in self.portfolio.trades)
-        win_returns = sum(
-            t.shares * 1.0 for t in self.portfolio.resolved_trades if t.won
-        )
-        self.portfolio.cash = self.portfolio.initial_bankroll - total_cost + win_returns
-        self.portfolio.total_invested = total_cost
+        cash = self.portfolio.initial_bankroll
+        for t in self.portfolio.trades:
+            cash -= t.cost_usd
+            if t.resolved and t.won:
+                cash += t.shares * 1.0
+        self.portfolio.cash = cash
+        self.portfolio.total_invested = sum(t.cost_usd for t in self.portfolio.trades)
         self.portfolio.total_returned = win_returns
 
     async def close(self):
