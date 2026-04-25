@@ -741,7 +741,7 @@ def generate_report():
 async def run_simulation_cycle():
     """Run one cycle for all strategies including last-hour."""
     # Prediction-based strategies
-    strategies = ["conservative", "balanced", "aggressive", "lasthour"]
+    strategies = ["conservative", "balanced", "aggressive"]
     simulators = [StrategySimulator(s, bankroll=10_000.0) for s in strategies]
 
     # Last-hour observation-based strategy
