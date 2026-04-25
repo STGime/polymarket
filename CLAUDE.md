@@ -157,6 +157,15 @@ This single-character bug meant we had 1 member instead of 139 for the entire in
 - Only ~9 countries include TX/TN: France, Spain, South Korea, China, Hong Kong, Brazil, Mexico, Argentina
 - US, UK, Germany, Japan, Singapore, Australia, Turkey do NOT include TX/TN in TAFs
 
+## Active Simulation Run
+- **Started:** 2026-04-25 06:50 UTC (fresh $10K per strategy)
+- **End:** 2026-04-30 (5 days)
+- **Dashboard:** https://weather-bot-sim-551730559911.us-central1.run.app
+- **Strategies:** conservative, balanced, aggressive (v3 model), lasthour (observation-based)
+- **GCS bucket:** gs://weather-bot-sim-data
+- **Cloud Run project:** gifted-palace-464208-n2
+- **Action on April 30:** Generate evaluation report, compare strategies, decide next steps
+
 ## Running
 ```bash
 # Analysis
