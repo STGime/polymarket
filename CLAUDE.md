@@ -166,6 +166,11 @@ This single-character bug meant we had 1 member instead of 139 for the entire in
 - **Cloud Run project:** gifted-palace-464208-n2
 - **Action on April 30:** Generate evaluation report, compare strategies, decide next steps
 
+## TODO (after April 30 evaluation)
+- **Early exit / sell before resolution** — if price moves in our favor, lock in profit early. If edge disappears, cut losses before market resolves against us. Currently all trades are held to resolution (binary $1 or $0 outcome).
+- Evaluate whether to continue with prediction model, lasthour strategy, or both
+- If profitable: consider live trading with real money (requires POLYMARKET_PRIVATE_KEY)
+
 ## Running
 ```bash
 # Analysis
